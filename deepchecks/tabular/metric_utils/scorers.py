@@ -426,18 +426,44 @@ class DeepcheckScorer:
                     np.array(label_col), self.model_classes
                 )
 
-        try:
-            scores = self.scorer(model, data, np.array(label_col))
-        except ValueError as e:
-            if getattr(self.scorer, "_score_func", "").__name__ == "roc_auc_score":
-                get_logger().warning(
-                    'ROC AUC failed with error message - "%s". setting scores as None',
-                    e,
-                    exc_info=get_logger().level == logging.DEBUG,
-                )
-                scores = None
-            else:
-                raise
+        from sklearn.metrics._scorer import _BaseScorer
+
+        y_pred = getattr(model, "y_pred", None)
+        is_dummy = y_pred is not None and hasattr(model, "_estimator_type")
+
+        # Determine if dataset is regression
+        is_regression = False
+        if hasattr(data, "task_type"):
+            tt = getattr(data, "task_type")
+            is_regression = (
+                str(tt).lower() == "regression"
+                or getattr(tt, "name", "").lower() == "regression"
+            )
+        elif hasattr(data, "label_type"):
+            lt = getattr(data, "label_type")
+            is_regression = str(lt).lower() == "regression"
+
+        # If this is a dummy model with precomputed preds for regression, compute directly
+        if is_dummy and is_regression and isinstance(self.scorer, _BaseScorer):
+            score_func = self.scorer._score_func
+            sign = getattr(self.scorer, "_sign", 1)
+            kwargs = getattr(self.scorer, "_kwargs", {}) or {}
+            y_true_arr = np.asarray(label_col).ravel()
+            y_pred_arr = np.asarray(y_pred).ravel()
+            scores = sign * score_func(y_true_arr, y_pred_arr, **kwargs)
+        else:
+            try:
+                scores = self.scorer(model, data, np.array(label_col))
+            except ValueError as e:
+                if getattr(self.scorer, "_score_func", "").__name__ == "roc_auc_score":
+                    get_logger().warning(
+                        'ROC AUC failed with error message - "%s". setting scores as None',
+                        e,
+                        exc_info=get_logger().level == logging.DEBUG,
+                    )
+                    scores = None
+                else:
+                    raise
 
         # The scores returned are for the model classes, but we want scores of the observed classes
         if self.model_classes is not None and isinstance(scores, np.ndarray):
